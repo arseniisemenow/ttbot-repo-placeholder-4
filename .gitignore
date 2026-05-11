@@ -1,0 +1,8 @@
+/coverage.out
+terraform/function/function
+terraform/function.zip
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/terraform.tfvars
