@@ -2,11 +2,11 @@ module github.com/arseniisemenow/ttbot-repo-placeholder-4/terraform/function
 
 go 1.23.0
 
-require github.com/arseniisemenow/ttbot-repo-placeholder-4 v0.1.0
+require github.com/arseniisemenow/ttbot-repo-placeholder-4 v0.2.0
 
 require (
 	github.com/arseniisemenow/s21auto-client-go v0.3.2 // indirect
-	github.com/arseniisemenow/ttbot-repo-placeholder-2 v0.1.0 // indirect
+	github.com/arseniisemenow/ttbot-repo-placeholder-2 v0.2.0 // indirect
 	github.com/go-resty/resty/v2 v2.7.0 // indirect
 	github.com/golang-jwt/jwt/v4 v4.5.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect

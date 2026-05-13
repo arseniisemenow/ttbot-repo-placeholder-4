@@ -37,10 +37,11 @@ type telegramUpdate struct {
 }
 
 type telegramMessage struct {
-	MessageID int64           `json:"message_id"`
-	Chat      telegramChat    `json:"chat"`
-	From      *telegramUser   `json:"from"`
-	Text      string          `json:"text"`
+	MessageID int64            `json:"message_id"`
+	Chat      telegramChat     `json:"chat"`
+	From      *telegramUser    `json:"from"`
+	Text      string           `json:"text"`
+	ReplyTo   *telegramMessage `json:"reply_to_message,omitempty"`
 }
 
 type telegramChat struct {
@@ -75,6 +76,11 @@ func bootstrap() {
 	botToken := mustEnv("TELEGRAM_BOT_TOKEN")
 	encKey := mustEnv("ADMIN_CREDENTIAL_ENCRYPTION_KEY")
 	identityURL := mustEnv("IDENTITY_SERVICE_URL")
+	// IDENTITY_SERVICE_API_KEY is the bot's own write-scope X-Api-Key for
+	// /admin/keys calls. Optional in env so a brand-new deploy doesn't
+	// hard-fail before the operator runs the CLI; commands that need it
+	// will fail soft with a clear message at request time.
+	apiKey := os.Getenv("IDENTITY_SERVICE_API_KEY")
 	cipher, err := crypto.New(encKey)
 	if err != nil {
 		initErr = err
@@ -94,7 +100,10 @@ func bootstrap() {
 	} else {
 		st = memstore.New()
 	}
-	hd = handlers.New(st, mes, s21c, cipher, handlers.Config{IdentityBaseURL: identityURL})
+	hd = handlers.New(st, mes, s21c, cipher, handlers.Config{
+		IdentityBaseURL:       identityURL,
+		IdentityServiceAPIKey: apiKey,
+	})
 }
 
 // Handler is the Yandex Cloud Function entrypoint.
@@ -133,20 +142,29 @@ func translate(u *telegramUpdate) *messenger.Update {
 	if u == nil || u.Message == nil {
 		return nil
 	}
-	out := &messenger.Update{UpdateID: u.UpdateID}
-	out.Message = &messenger.Message{
-		MessageID: u.Message.MessageID,
-		Chat:      messenger.Chat{ID: u.Message.Chat.ID, Type: u.Message.Chat.Type, Username: u.Message.Chat.Username},
-		Text:      u.Message.Text,
+	return &messenger.Update{UpdateID: u.UpdateID, Message: translateMessage(u.Message)}
+}
+
+func translateMessage(m *telegramMessage) *messenger.Message {
+	if m == nil {
+		return nil
 	}
-	if u.Message.From != nil {
-		out.Message.From = &messenger.User{
-			ID:        u.Message.From.ID,
-			IsBot:     u.Message.From.IsBot,
-			Username:  u.Message.From.Username,
-			FirstName: u.Message.From.FirstName,
-			LastName:  u.Message.From.LastName,
+	out := &messenger.Message{
+		MessageID: m.MessageID,
+		Chat:      messenger.Chat{ID: m.Chat.ID, Type: m.Chat.Type, Username: m.Chat.Username},
+		Text:      m.Text,
+	}
+	if m.From != nil {
+		out.From = &messenger.User{
+			ID:        m.From.ID,
+			IsBot:     m.From.IsBot,
+			Username:  m.From.Username,
+			FirstName: m.From.FirstName,
+			LastName:  m.From.LastName,
 		}
+	}
+	if m.ReplyTo != nil {
+		out.ReplyTo = translateMessage(m.ReplyTo)
 	}
 	return out
 }
