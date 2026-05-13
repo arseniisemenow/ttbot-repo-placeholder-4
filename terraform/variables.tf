@@ -37,6 +37,13 @@ variable "identity_service_url" {
   type        = string
 }
 
+variable "identity_service_api_key" {
+  description = "Identity-bot's own write-scope X-Api-Key for the identity service. Created via the admin CLI (`ttbot-identity-admin create-key --name identity-bot-prod --scopes write`). Optional pre-bootstrap — commands that need it fail with a clear message if unset."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "log_level" {
   description = "Function log verbosity (info, debug)."
   type        = string

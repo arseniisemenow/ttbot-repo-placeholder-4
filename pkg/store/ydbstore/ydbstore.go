@@ -38,7 +38,8 @@ func (s *Store) Close() error {
 	return s.driver.Close(context.Background())
 }
 
-func (s *Store) Admin() store.AdminRepo { return adminRepo{s} }
+func (s *Store) Admin() store.AdminRepo                  { return adminRepo{s} }
+func (s *Store) PendingDeletes() store.PendingDeleteRepo { return pendingRepo{s} }
 
 type adminRepo struct{ s *Store }
 
@@ -99,4 +100,76 @@ VALUES (1, $tid, $login, $creds, $uat);`
 		return err
 	}, table.WithIdempotent(),
 		table.WithTxSettings(table.TxSettings(table.WithSerializableReadWrite())))
+}
+
+// ---------------- pending deletes ----------------
+
+type pendingRepo struct{ s *Store }
+
+func (r pendingRepo) Insert(ctx context.Context, p store.PendingDelete) error {
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = time.Now().UTC()
+	}
+	const sql = `
+DECLARE $cid AS Int64;
+DECLARE $mid AS Int64;
+DECLARE $dat AS Timestamp;
+DECLARE $cat AS Timestamp;
+UPSERT INTO pending_deletes (chat_id, message_id, delete_at, created_at)
+VALUES ($cid, $mid, $dat, $cat);`
+	return r.s.driver.Table().DoTx(ctx, func(ctx context.Context, tx table.TransactionActor) error {
+		_, err := tx.Execute(ctx, sql, table.NewQueryParameters(
+			table.ValueParam("$cid", types.Int64Value(p.ChatID)),
+			table.ValueParam("$mid", types.Int64Value(p.MessageID)),
+			table.ValueParam("$dat", types.TimestampValueFromTime(p.DeleteAt.UTC())),
+			table.ValueParam("$cat", types.TimestampValueFromTime(p.CreatedAt.UTC())),
+		))
+		return err
+	}, table.WithIdempotent())
+}
+
+func (r pendingRepo) ListDue(ctx context.Context, now time.Time) ([]store.PendingDelete, error) {
+	var out []store.PendingDelete
+	err := r.s.driver.Table().Do(ctx, func(ctx context.Context, sess table.Session) error {
+		_, res, err := sess.Execute(ctx, table.DefaultTxControl(),
+			`DECLARE $now AS Timestamp;
+			 SELECT chat_id, message_id, delete_at, created_at FROM pending_deletes
+			 WHERE delete_at <= $now ORDER BY delete_at;`,
+			table.NewQueryParameters(
+				table.ValueParam("$now", types.TimestampValueFromTime(now.UTC())),
+			))
+		if err != nil {
+			return err
+		}
+		defer res.Close()
+		if err := res.NextResultSetErr(ctx); err != nil {
+			return err
+		}
+		for res.NextRow() {
+			var p store.PendingDelete
+			if err := res.ScanNamed(
+				named.Required("chat_id", &p.ChatID),
+				named.Required("message_id", &p.MessageID),
+				named.Required("delete_at", &p.DeleteAt),
+				named.Required("created_at", &p.CreatedAt),
+			); err != nil {
+				return err
+			}
+			out = append(out, p)
+		}
+		return nil
+	}, table.WithIdempotent())
+	return out, err
+}
+
+func (r pendingRepo) Delete(ctx context.Context, chatID, messageID int64) error {
+	return r.s.driver.Table().DoTx(ctx, func(ctx context.Context, tx table.TransactionActor) error {
+		_, err := tx.Execute(ctx,
+			"DECLARE $cid AS Int64; DECLARE $mid AS Int64; DELETE FROM pending_deletes WHERE chat_id = $cid AND message_id = $mid;",
+			table.NewQueryParameters(
+				table.ValueParam("$cid", types.Int64Value(chatID)),
+				table.ValueParam("$mid", types.Int64Value(messageID)),
+			))
+		return err
+	}, table.WithIdempotent())
 }

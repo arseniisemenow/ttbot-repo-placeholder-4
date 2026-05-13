@@ -61,9 +61,59 @@ resource "yandex_function" "identity_bot" {
     TELEGRAM_WEBHOOK_SECRET         = var.telegram_webhook_secret
     ADMIN_CREDENTIAL_ENCRYPTION_KEY = var.admin_credential_encryption_key
     IDENTITY_SERVICE_URL            = var.identity_service_url
+    IDENTITY_SERVICE_API_KEY        = var.identity_service_api_key
     YDB_ENDPOINT                    = yandex_ydb_database_serverless.db.ydb_full_endpoint
     YDB_AUTH_METADATA               = "true"
     LOG_LEVEL                       = var.log_level
+  }
+}
+
+# Cron — fires every 15 min. Re-validates the primary admin's S21 creds and
+# sweeps the pending_deletes table (used to vanish the plaintext-key DM
+# minted by /new_read_key).
+data "archive_file" "cron_function" {
+  type        = "zip"
+  source_dir  = "${path.module}/cron-function"
+  output_path = "${path.module}/cron-function.zip"
+  excludes    = ["cron-function", "cron-function.zip", ".gitkeep"]
+}
+
+resource "yandex_function" "identity_bot_cron" {
+  name               = "identity-bot-cron"
+  description        = "Identity-bot periodic job (admin creds re-validation + pending_deletes sweep)"
+  user_hash          = data.archive_file.cron_function.output_base64sha256
+  runtime            = "golang123"
+  entrypoint         = "handler.Handler"
+  memory             = 256
+  execution_timeout  = 30
+  service_account_id = yandex_iam_service_account.fn_sa.id
+
+  content {
+    zip_filename = data.archive_file.cron_function.output_path
+  }
+
+  environment = {
+    TELEGRAM_BOT_TOKEN              = var.telegram_bot_token
+    ADMIN_CREDENTIAL_ENCRYPTION_KEY = var.admin_credential_encryption_key
+    IDENTITY_SERVICE_URL            = var.identity_service_url
+    IDENTITY_SERVICE_API_KEY        = var.identity_service_api_key
+    YDB_ENDPOINT                    = yandex_ydb_database_serverless.db.ydb_full_endpoint
+    YDB_AUTH_METADATA               = "true"
+    LOG_LEVEL                       = var.log_level
+  }
+}
+
+resource "yandex_function_trigger" "identity_bot_cron_timer" {
+  name        = "identity-bot-cron-timer"
+  description = "Fires identity-bot-cron every 15 minutes"
+
+  timer {
+    cron_expression = "0/15 * ? * * *"
+  }
+
+  function {
+    id                 = yandex_function.identity_bot_cron.id
+    service_account_id = yandex_iam_service_account.fn_sa.id
   }
 }
 

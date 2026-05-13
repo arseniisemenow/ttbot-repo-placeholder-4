@@ -18,6 +18,16 @@ import (
 // Messenger is the interface used by handlers.
 type Messenger interface {
 	SendMessage(ctx context.Context, chatID int64, text string) (int64, error)
+	// SendMessageWithForceReply sends a message tagged with Telegram's
+	// `force_reply` markup. The recipient's client shows an immediate reply
+	// composer; their reply arrives as a Message with ReplyTo populated.
+	// Used to split a sensitive prompt ("/new_read_key") from the actual
+	// secret ("login:password") into two distinct messages so the bot can
+	// delete only the secret.
+	SendMessageWithForceReply(ctx context.Context, chatID int64, text, placeholder string) (int64, error)
+	// DeleteMessage removes a message the bot or the user posted. Used to
+	// scrub the user's S21-creds reply moments after we've read it.
+	DeleteMessage(ctx context.Context, chatID, messageID int64) error
 }
 
 // Common error sentinels.
@@ -34,10 +44,11 @@ type Update struct {
 
 // Message is one Telegram message.
 type Message struct {
-	MessageID int64  `json:"message_id"`
-	Chat      Chat   `json:"chat"`
-	From      *User  `json:"from"`
-	Text      string `json:"text"`
+	MessageID int64    `json:"message_id"`
+	Chat      Chat     `json:"chat"`
+	From      *User    `json:"from"`
+	Text      string   `json:"text"`
+	ReplyTo   *Message `json:"reply_to_message,omitempty"`
 }
 
 // Chat is a chat reference.
@@ -105,6 +116,77 @@ func (t *telegramAPI) SendMessage(ctx context.Context, chatID int64, text string
 	return wrapper.Result.MessageID, nil
 }
 
+func (t *telegramAPI) SendMessageWithForceReply(ctx context.Context, chatID int64, text, placeholder string) (int64, error) {
+	replyMarkup := map[string]any{
+		"force_reply": true,
+		"selective":   true,
+	}
+	if placeholder != "" {
+		replyMarkup["input_field_placeholder"] = placeholder
+	}
+	body, _ := json.Marshal(map[string]any{
+		"chat_id":      chatID,
+		"text":         text,
+		"reply_markup": replyMarkup,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tgEndpoint+t.token+"/sendMessage", bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := t.http.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("sendMessage: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	wrapper := struct {
+		OK          bool   `json:"ok"`
+		ErrorCode   int    `json:"error_code,omitempty"`
+		Description string `json:"description,omitempty"`
+		Result      struct {
+			MessageID int64 `json:"message_id"`
+		} `json:"result,omitempty"`
+	}{}
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return 0, fmt.Errorf("decode: %w body=%s", err, string(raw))
+	}
+	if !wrapper.OK {
+		return 0, fmt.Errorf("telegram %d: %s", wrapper.ErrorCode, wrapper.Description)
+	}
+	return wrapper.Result.MessageID, nil
+}
+
+func (t *telegramAPI) DeleteMessage(ctx context.Context, chatID, messageID int64) error {
+	body, _ := json.Marshal(map[string]any{"chat_id": chatID, "message_id": messageID})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tgEndpoint+t.token+"/deleteMessage", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := t.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("deleteMessage: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	wrapper := struct {
+		OK          bool   `json:"ok"`
+		ErrorCode   int    `json:"error_code,omitempty"`
+		Description string `json:"description,omitempty"`
+	}{}
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return fmt.Errorf("decode: %w body=%s", err, string(raw))
+	}
+	if !wrapper.OK {
+		if wrapper.ErrorCode == 400 || wrapper.ErrorCode == 404 {
+			return fmt.Errorf("%w: %s", ErrNotFound, wrapper.Description)
+		}
+		return fmt.Errorf("telegram %d: %s", wrapper.ErrorCode, wrapper.Description)
+	}
+	return nil
+}
+
 // Mock is a test Messenger.
 type Mock struct {
 	mu    sync.Mutex
@@ -114,8 +196,11 @@ type Mock struct {
 
 // MockCall is one recorded send.
 type MockCall struct {
-	ChatID int64
-	Text   string
+	Method      string // "SendMessage" | "SendMessageWithForceReply" | "DeleteMessage"
+	ChatID      int64
+	Text        string
+	Placeholder string
+	MessageID   int64
 }
 
 // NewMock returns a Mock.
@@ -130,8 +215,34 @@ func (m *Mock) SendMessage(_ context.Context, chatID int64, text string) (int64,
 		m.Fail = nil
 		return 0, err
 	}
-	m.Calls = append(m.Calls, MockCall{ChatID: chatID, Text: text})
+	m.Calls = append(m.Calls, MockCall{Method: "SendMessage", ChatID: chatID, Text: text})
 	return int64(len(m.Calls)), nil
+}
+
+// SendMessageWithForceReply records the call.
+func (m *Mock) SendMessageWithForceReply(_ context.Context, chatID int64, text, placeholder string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Fail != nil {
+		err := m.Fail
+		m.Fail = nil
+		return 0, err
+	}
+	m.Calls = append(m.Calls, MockCall{Method: "SendMessageWithForceReply", ChatID: chatID, Text: text, Placeholder: placeholder})
+	return int64(len(m.Calls)), nil
+}
+
+// DeleteMessage records the call.
+func (m *Mock) DeleteMessage(_ context.Context, chatID, messageID int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Fail != nil {
+		err := m.Fail
+		m.Fail = nil
+		return err
+	}
+	m.Calls = append(m.Calls, MockCall{Method: "DeleteMessage", ChatID: chatID, MessageID: messageID})
+	return nil
 }
 
 // LastText returns the most recent message text, or "" if none.

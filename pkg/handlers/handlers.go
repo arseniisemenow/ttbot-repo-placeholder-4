@@ -22,8 +22,12 @@ import (
 
 // Config carries injectable settings.
 type Config struct {
-	IdentityBaseURL string           // base URL of placeholder-3 identity service
-	Now             func() time.Time // injectable clock
+	IdentityBaseURL string // base URL of placeholder-3 identity service
+	// IdentityServiceAPIKey is the bot's own write-scope X-Api-Key, used to
+	// call /admin/keys for read-key minting/revocation. Created via the
+	// admin CLI once at bootstrap, then pasted into the bot's env.
+	IdentityServiceAPIKey string
+	Now                   func() time.Time // injectable clock
 }
 
 // Handlers is the dependency bag for command routing.
@@ -53,6 +57,14 @@ func (h *Handlers) Dispatch(ctx context.Context, u *messenger.Update) error {
 		// Identity bot only operates in DMs.
 		return nil
 	}
+	// Credentials-reply detection runs BEFORE the command switch: a /key-flow
+	// reply has text that looks like "login:password" with no leading slash,
+	// so it'd otherwise fall through. The detection is structural — must be
+	// a reply to a bot message whose first line carries our [KEY_OP=...]
+	// header.
+	if isKeyFlowReply(m) {
+		return h.handleKeyReply(ctx, m)
+	}
 	text := strings.TrimSpace(m.Text)
 	if text == "" {
 		return nil
@@ -71,6 +83,10 @@ func (h *Handlers) Dispatch(ctx context.Context, u *messenger.Update) error {
 		return h.handleMyNickname(ctx, m)
 	case "/list_users":
 		return h.handleListUsers(ctx, m)
+	case "/new_read_key":
+		return h.handleNewReadKey(ctx, m, args)
+	case "/revoke_read_key":
+		return h.handleRevokeReadKey(ctx, m, args)
 	}
 	return nil
 }
@@ -105,6 +121,9 @@ func (h *Handlers) handleStart(ctx context.Context, m *messenger.Message) error 
 			"/provide_nickname <s21_login> — register your S21 nickname for this Telegram account.\n"+
 			"/remove_nickname — clear your registered nickname.\n"+
 			"/my_nickname — show what's stored for you.\n\n"+
+			"API access (S21 admins):\n"+
+			"/new_read_key <name> — mint a read-only identity-service API key. Two-step: I'll prompt for your S21 creds in a reply.\n"+
+			"/revoke_read_key <name> — revoke a read key you created. Same two-step flow.\n\n"+
 			"Administrators:\n"+
 			"/admin <login>:<password> — claim the admin role (last-wins). Required so the bot can validate user nicknames against S21.\n"+
 			"/list_users — list every registered user.")

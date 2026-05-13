@@ -41,3 +41,34 @@ resource "yandex_ydb_table" "bot_admin" {
 
   primary_key = ["id"]
 }
+
+# pending_deletes — messages the bot has DMed that need to vanish later. The
+# cron function sweeps rows whose delete_at is in the past and removes them
+# both from Telegram and from this table.
+resource "yandex_ydb_table" "pending_deletes" {
+  path              = "pending_deletes"
+  connection_string = yandex_ydb_database_serverless.db.ydb_full_endpoint
+
+  column {
+    name     = "chat_id"
+    type     = "Int64"
+    not_null = true
+  }
+  column {
+    name     = "message_id"
+    type     = "Int64"
+    not_null = true
+  }
+  column {
+    name     = "delete_at"
+    type     = "Timestamp"
+    not_null = true
+  }
+  column {
+    name     = "created_at"
+    type     = "Timestamp"
+    not_null = true
+  }
+
+  primary_key = ["chat_id", "message_id"]
+}
