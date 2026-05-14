@@ -2,11 +2,11 @@ module github.com/arseniisemenow/s21-identity-bot/terraform/function
 
 go 1.23.0
 
-require github.com/arseniisemenow/s21-identity-bot v0.4.0
+require github.com/arseniisemenow/s21-identity-bot v0.4.1
 
 require (
 	github.com/arseniisemenow/s21-account-go v0.1.0 // indirect
-	github.com/arseniisemenow/s21-identity-client-go v0.3.0 // indirect
+	github.com/arseniisemenow/s21-identity-client-go v0.4.0 // indirect
 	github.com/arseniisemenow/s21auto-client-go v0.3.2 // indirect
 	github.com/go-resty/resty/v2 v2.7.0 // indirect
 	github.com/golang-jwt/jwt/v4 v4.5.0 // indirect
