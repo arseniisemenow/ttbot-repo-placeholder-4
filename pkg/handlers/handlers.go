@@ -122,12 +122,16 @@ func (h *Handlers) reply(ctx context.Context, m *messenger.Message, text string)
 func (h *Handlers) handleStart(ctx context.Context, m *messenger.Message) error {
 	return h.reply(ctx, m,
 		"Hi! I'm the S21 identity bot.\n\n"+
+			"I keep a directory of School-21 nicknames so other bots (e.g. @s21_table_tennis_bot) "+
+			"can find players by Telegram username. To register yourself, run "+
+			"/provide_nickname <your_s21_nickname>.\n\n"+
 			"Nickname registration:\n"+
-			"/provide_nickname <s21_login> — register your S21 nickname for this Telegram account.\n"+
+			"/provide_nickname <s21_nickname> — register your School-21 nickname for this Telegram account.\n"+
 			"/remove_nickname — clear your registered nickname.\n"+
 			"/my_nickname — show what's stored for you.\n\n"+
 			"S21 session (the bot uses your S21 creds to validate nicknames):\n"+
-			"/login — store your S21 creds. Two-step: I'll prompt you to reply with `login:password`, validate against S21, and delete your reply immediately.\n"+
+			"/login — store your S21 creds. Two-step: I'll prompt you to reply with `login:password`, validate against S21, and delete your reply immediately. "+
+			"Multiple users can /login; the bot picks healthy stored credentials per call.\n"+
 			"/logout — remove your stored S21 creds. Two-step confirm.\n"+
 			"/whoami — show whether you're logged in and the health of your creds.\n\n"+
 			"API keys:\n"+
@@ -139,7 +143,7 @@ func (h *Handlers) handleStart(ctx context.Context, m *messenger.Message) error 
 func (h *Handlers) handleProvideNickname(ctx context.Context, m *messenger.Message, args string) error {
 	nick := strings.TrimSpace(args)
 	if nick == "" {
-		return h.reply(ctx, m, "Usage: /provide_nickname <s21_login>")
+		return h.reply(ctx, m, "Usage: /provide_nickname <s21_nickname>")
 	}
 	err := h.withIdentityClient(ctx, func(cli *identityclient.Client) error {
 		_, err := cli.PutUser(ctx, m.From.ID, nick)
@@ -181,7 +185,7 @@ func (h *Handlers) handleMyNickname(ctx context.Context, m *messenger.Message) e
 	case errors.Is(err, s21account.ErrNoHealthy):
 		return h.reply(ctx, m, "No healthy S21 accounts available right now — somebody needs to /login.")
 	case errors.Is(err, identityclient.ErrNotFound):
-		return h.reply(ctx, m, "You don't have a nickname registered. Run /provide_nickname <s21_login>.")
+		return h.reply(ctx, m, "You don't have a nickname registered. Run /provide_nickname <s21_nickname>.")
 	case err != nil:
 		return h.reply(ctx, m, identityErrorMessage(err))
 	}

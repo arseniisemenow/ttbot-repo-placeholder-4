@@ -25,6 +25,13 @@ type Messenger interface {
 	// secret ("login:password") into two distinct messages so the bot can
 	// delete only the secret.
 	SendMessageWithForceReply(ctx context.Context, chatID int64, text, placeholder string) (int64, error)
+	// SendMessageWithForceReplyHTML is the HTML-parse-mode sibling. Used for
+	// prompts that carry a state tag at the end wrapped in <tg-spoiler> —
+	// Telegram renders the tag as a hidden chip the user can tap to reveal,
+	// instead of leaking [LOGIN_OP=...] noise as plain text. The text in
+	// reply_to_message arrives stripped of HTML on the callback side, so
+	// regex parsing of the tag still works unchanged.
+	SendMessageWithForceReplyHTML(ctx context.Context, chatID int64, html, placeholder string) (int64, error)
 	// DeleteMessage removes a message the bot or the user posted. Used to
 	// scrub the user's S21-creds reply moments after we've read it.
 	DeleteMessage(ctx context.Context, chatID, messageID int64) error
@@ -117,6 +124,14 @@ func (t *telegramAPI) SendMessage(ctx context.Context, chatID int64, text string
 }
 
 func (t *telegramAPI) SendMessageWithForceReply(ctx context.Context, chatID int64, text, placeholder string) (int64, error) {
+	return t.sendForceReply(ctx, chatID, text, placeholder, "")
+}
+
+func (t *telegramAPI) SendMessageWithForceReplyHTML(ctx context.Context, chatID int64, html, placeholder string) (int64, error) {
+	return t.sendForceReply(ctx, chatID, html, placeholder, "HTML")
+}
+
+func (t *telegramAPI) sendForceReply(ctx context.Context, chatID int64, text, placeholder, parseMode string) (int64, error) {
 	replyMarkup := map[string]any{
 		"force_reply": true,
 		"selective":   true,
@@ -124,11 +139,15 @@ func (t *telegramAPI) SendMessageWithForceReply(ctx context.Context, chatID int6
 	if placeholder != "" {
 		replyMarkup["input_field_placeholder"] = placeholder
 	}
-	body, _ := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"chat_id":      chatID,
 		"text":         text,
 		"reply_markup": replyMarkup,
-	})
+	}
+	if parseMode != "" {
+		payload["parse_mode"] = parseMode
+	}
+	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tgEndpoint+t.token+"/sendMessage", bytes.NewReader(body))
 	if err != nil {
 		return 0, err
@@ -230,6 +249,12 @@ func (m *Mock) SendMessageWithForceReply(_ context.Context, chatID int64, text, 
 	}
 	m.Calls = append(m.Calls, MockCall{Method: "SendMessageWithForceReply", ChatID: chatID, Text: text, Placeholder: placeholder})
 	return int64(len(m.Calls)), nil
+}
+
+// SendMessageWithForceReplyHTML — same shape as the plain-text sibling;
+// the mock forwards (HTML rendering is a Telegram-side concern).
+func (m *Mock) SendMessageWithForceReplyHTML(ctx context.Context, chatID int64, html, placeholder string) (int64, error) {
+	return m.SendMessageWithForceReply(ctx, chatID, html, placeholder)
 }
 
 // DeleteMessage records the call.

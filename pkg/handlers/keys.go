@@ -28,10 +28,12 @@ const pendingDeleteDelay = 15 * time.Minute
 // the service.
 var validKeyName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
 
-// promptHeaderRegex matches the machine-readable header line at the top of
-// every key-flow prompt. The header carries the operation (new|revoke) and
-// the key name so a force-reply round-trip stays stateless.
-var promptHeaderRegex = regexp.MustCompile(`^\[KEY_OP=(new|revoke) name=([A-Za-z0-9_.-]+)\]`)
+// promptHeaderRegex matches the machine-readable state tag in every
+// key-flow prompt. The tag carries the operation (new|revoke) and the
+// key name so a force-reply round-trip stays stateless. The tag now
+// sits at the END of the prompt body wrapped in <tg-spoiler>; we drop
+// the ^ anchor.
+var promptHeaderRegex = regexp.MustCompile(`\[KEY_OP=(new|revoke) name=([A-Za-z0-9_.-]+)\]`)
 
 // handleNewReadKey kicks off the two-step /new_read_key flow. Step 1 here:
 // validate the name, then send a force-reply prompt asking for S21 creds.
@@ -42,11 +44,13 @@ func (h *Handlers) handleNewReadKey(ctx context.Context, m *messenger.Message, a
 		return h.reply(ctx, m,
 			"Usage: /new_read_key <name>\n\nName must be 1–64 chars: letters, digits, underscore, dot, dash.")
 	}
-	prompt := fmt.Sprintf(
-		"[KEY_OP=new name=%s]\n\nReply with your S21 credentials as `login:password` (single message). I'll validate them, delete your reply immediately, and DM you the key. You can have only ONE active read key — revoke first if you already have one.",
-		name)
-	if _, err := h.M.SendMessageWithForceReply(ctx, m.Chat.ID, prompt, "login:password"); err != nil {
-		return h.reply(ctx, m, "Couldn't send prompt: "+err.Error())
+	prompt := "Reply with your S21 credentials as `login:password` (single message). " +
+		"I'll validate them, delete your reply immediately, and DM you the key. " +
+		"You can have only ONE active read key — revoke first if you already have one." +
+		"\n\n" + spoilerWrap(fmt.Sprintf("[KEY_OP=new name=%s]", name))
+	if _, err := h.M.SendMessageWithForceReplyHTML(ctx, m.Chat.ID, prompt, "login:password"); err != nil {
+		return h.userFacingError(ctx, m, "/new_read_key: send prompt",
+			"Telegram is unreachable right now — try again shortly.", err)
 	}
 	return nil
 }
@@ -57,11 +61,12 @@ func (h *Handlers) handleRevokeReadKey(ctx context.Context, m *messenger.Message
 	if !validKeyName.MatchString(name) {
 		return h.reply(ctx, m, "Usage: /revoke_read_key <name>")
 	}
-	prompt := fmt.Sprintf(
-		"[KEY_OP=revoke name=%s]\n\nReply with your S21 credentials as `login:password` to revoke this key. Reply will be deleted after validation.",
-		name)
-	if _, err := h.M.SendMessageWithForceReply(ctx, m.Chat.ID, prompt, "login:password"); err != nil {
-		return h.reply(ctx, m, "Couldn't send prompt: "+err.Error())
+	prompt := "Reply with your S21 credentials as `login:password` to revoke this key. " +
+		"Reply will be deleted after validation." +
+		"\n\n" + spoilerWrap(fmt.Sprintf("[KEY_OP=revoke name=%s]", name))
+	if _, err := h.M.SendMessageWithForceReplyHTML(ctx, m.Chat.ID, prompt, "login:password"); err != nil {
+		return h.userFacingError(ctx, m, "/revoke_read_key: send prompt",
+			"Telegram is unreachable right now — try again shortly.", err)
 	}
 	return nil
 }
@@ -125,7 +130,8 @@ func (h *Handlers) handleKeyReply(ctx context.Context, m *messenger.Message) err
 func (h *Handlers) completeNewKey(ctx context.Context, m *messenger.Message, name, login, password string, profile s21.Profile) error {
 	cli, err := h.identityServiceClient(login, password)
 	if err != nil {
-		return h.reply(ctx, m, err.Error())
+		return h.userFacingError(ctx, m, "/new_read_key: client init",
+			"The bot isn't fully configured (operator: missing IDENTITY_SERVICE_API_KEY env). Try again after redeploy.", err)
 	}
 	resp, err := cli.CreateAPIKey(ctx, identityclient.CreateAPIKeyRequest{
 		Name:                name,
@@ -138,13 +144,15 @@ func (h *Handlers) completeNewKey(ctx context.Context, m *messenger.Message, nam
 			return h.reply(ctx, m,
 				"You already have an active key, or the name is taken. Run /revoke_read_key <name> first, or pick a different name.")
 		case errors.Is(err, identityclient.ErrBadRequest):
-			return h.reply(ctx, m, "Bad request: "+err.Error())
+			return h.reply(ctx, m,
+				"Bad request — likely the key name isn't allowed (1–64 chars, letters/digits/_.- only).")
 		case errors.Is(err, identityclient.ErrInvalidS21Token):
 			return h.reply(ctx, m, "Identity service rejected the S21 credentials.")
 		case errors.Is(err, identityclient.ErrUnavailable):
 			return h.reply(ctx, m, "Identity service unavailable. Try again shortly.")
 		}
-		return h.reply(ctx, m, "Mint failed: "+err.Error())
+		return h.userFacingError(ctx, m, "/new_read_key: mint",
+			"Couldn't mint the key right now — try again shortly.", err)
 	}
 	keyMsg := fmt.Sprintf(
 		"KEY CREATED — copy this NOW. It will vanish from this chat in about %d minutes and is never recoverable.\n\nname:   %s\nscopes: %s\nkey:    %s\n\nAuthenticated as %s (%s).",
@@ -171,7 +179,8 @@ func (h *Handlers) completeNewKey(ctx context.Context, m *messenger.Message, nam
 func (h *Handlers) completeRevokeKey(ctx context.Context, m *messenger.Message, name, login, password string) error {
 	cli, err := h.identityServiceClient(login, password)
 	if err != nil {
-		return h.reply(ctx, m, err.Error())
+		return h.userFacingError(ctx, m, "/revoke_read_key: client init",
+			"The bot isn't fully configured (operator: missing IDENTITY_SERVICE_API_KEY env). Try again after redeploy.", err)
 	}
 	if err := cli.RevokeAPIKey(ctx, name, m.From.ID); err != nil {
 		switch {
@@ -182,7 +191,8 @@ func (h *Handlers) completeRevokeKey(ctx context.Context, m *messenger.Message, 
 		case errors.Is(err, identityclient.ErrUnavailable):
 			return h.reply(ctx, m, "Identity service unavailable. Try again shortly.")
 		}
-		return h.reply(ctx, m, "Revoke failed: "+err.Error())
+		return h.userFacingError(ctx, m, "/revoke_read_key",
+			"Couldn't revoke the key right now — try again shortly.", err)
 	}
 	return h.reply(ctx, m, "Revoked "+name+".")
 }
@@ -220,7 +230,8 @@ func (h *Handlers) handleMyKeys(ctx context.Context, m *messenger.Message) error
 		return h.reply(ctx, m, "No healthy S21 accounts available right now — somebody needs to /login.")
 	}
 	if err != nil {
-		return h.reply(ctx, m, "Couldn't list keys: "+err.Error())
+		return h.userFacingError(ctx, m, "/my_keys",
+			"Couldn't list keys right now — try again shortly.", err)
 	}
 	if len(keys) == 0 {
 		return h.reply(ctx, m, "You have no read keys. Mint one with /new_read_key <name>.")
