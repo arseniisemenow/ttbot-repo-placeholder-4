@@ -202,12 +202,14 @@ func (h *Handlers) identityServiceClient(login, password string) (*identityclien
 
 // handleMyKeys lists the caller's read keys by name and status. No S21
 // prompt — we route through PickHealthy to grab whichever logged-in row
-// has working creds, then filter the listing to the caller's telegram_id.
-// Useful when a user forgot what they named their key and wants to revoke it.
+// has working creds, then ask identity-service for keys filtered to the
+// caller's telegram_id. Server-side filtering (via ListAPIKeysByCreator)
+// works on the bot's write-scope key; the unscoped ListAPIKeys now
+// requires admin scope per S1+S2 of the security hardening.
 func (h *Handlers) handleMyKeys(ctx context.Context, m *messenger.Message) error {
 	var keys []identityclient.APIKeyInfo
 	err := h.withIdentityClient(ctx, func(cli *identityclient.Client) error {
-		got, err := cli.ListAPIKeys(ctx)
+		got, err := cli.ListAPIKeysByCreator(ctx, m.From.ID)
 		if err != nil {
 			return err
 		}
@@ -220,15 +222,10 @@ func (h *Handlers) handleMyKeys(ctx context.Context, m *messenger.Message) error
 	if err != nil {
 		return h.reply(ctx, m, "Couldn't list keys: "+err.Error())
 	}
-	var mine []identityclient.APIKeyInfo
-	for _, k := range keys {
-		if k.CreatedByTelegramID == m.From.ID {
-			mine = append(mine, k)
-		}
-	}
-	if len(mine) == 0 {
+	if len(keys) == 0 {
 		return h.reply(ctx, m, "You have no read keys. Mint one with /new_read_key <name>.")
 	}
+	mine := keys // already filtered server-side; keep variable name for the loop below
 	var b strings.Builder
 	b.WriteString("Your read keys:\n")
 	for _, k := range mine {
