@@ -45,12 +45,14 @@ type adminRepo struct{ s *Store }
 
 func (r adminRepo) Get(ctx context.Context) (store.BotAdmin, error) {
 	var (
-		a   store.BotAdmin
-		tid uint64
+		a        store.BotAdmin
+		tid      uint64
+		failedAt *time.Time
+		warnedAt *time.Time
 	)
 	err := r.s.driver.Table().Do(ctx, func(ctx context.Context, sess table.Session) error {
 		_, res, err := sess.Execute(ctx, table.DefaultTxControl(),
-			"SELECT telegram_id, s21_login, s21_creds_encrypted, updated_at FROM bot_admin WHERE id = 1;",
+			"SELECT telegram_id, s21_login, s21_creds_encrypted, updated_at, s21_creds_failed_at, s21_creds_last_warned_at FROM bot_admin WHERE id = 1;",
 			nil)
 		if err != nil {
 			return err
@@ -67,10 +69,14 @@ func (r adminRepo) Get(ctx context.Context) (store.BotAdmin, error) {
 			named.Required("s21_login", &a.S21Login),
 			named.Required("s21_creds_encrypted", &a.S21CredsEncrypted),
 			named.Required("updated_at", &a.UpdatedAt),
+			named.Optional("s21_creds_failed_at", &failedAt),
+			named.Optional("s21_creds_last_warned_at", &warnedAt),
 		); err != nil {
 			return err
 		}
 		a.TelegramID = int64(tid)
+		a.S21CredsFailedAt = failedAt
+		a.S21CredsLastWarnedAt = warnedAt
 		return nil
 	}, table.WithIdempotent())
 	if errors.Is(err, store.ErrNotFound) {
@@ -88,14 +94,26 @@ DECLARE $tid AS Uint64;
 DECLARE $login AS Utf8;
 DECLARE $creds AS Utf8;
 DECLARE $uat AS Timestamp;
-UPSERT INTO bot_admin (id, telegram_id, s21_login, s21_creds_encrypted, updated_at)
-VALUES (1, $tid, $login, $creds, $uat);`
+DECLARE $fat AS Timestamp?;
+DECLARE $wat AS Timestamp?;
+UPSERT INTO bot_admin (id, telegram_id, s21_login, s21_creds_encrypted, updated_at, s21_creds_failed_at, s21_creds_last_warned_at)
+VALUES (1, $tid, $login, $creds, $uat, $fat, $wat);`
+	failedAtVal := types.NullValue(types.TypeTimestamp)
+	if a.S21CredsFailedAt != nil {
+		failedAtVal = types.OptionalValue(types.TimestampValueFromTime(a.S21CredsFailedAt.UTC()))
+	}
+	warnedAtVal := types.NullValue(types.TypeTimestamp)
+	if a.S21CredsLastWarnedAt != nil {
+		warnedAtVal = types.OptionalValue(types.TimestampValueFromTime(a.S21CredsLastWarnedAt.UTC()))
+	}
 	return r.s.driver.Table().DoTx(ctx, func(ctx context.Context, tx table.TransactionActor) error {
 		_, err := tx.Execute(ctx, sql, table.NewQueryParameters(
 			table.ValueParam("$tid", types.Uint64Value(uint64(a.TelegramID))),
 			table.ValueParam("$login", types.UTF8Value(a.S21Login)),
 			table.ValueParam("$creds", types.UTF8Value(a.S21CredsEncrypted)),
 			table.ValueParam("$uat", types.TimestampValueFromTime(a.UpdatedAt.UTC())),
+			table.ValueParam("$fat", failedAtVal),
+			table.ValueParam("$wat", warnedAtVal),
 		))
 		return err
 	}, table.WithIdempotent(),

@@ -38,6 +38,21 @@ resource "yandex_ydb_table" "bot_admin" {
     type     = "Timestamp"
     not_null = true
   }
+  # Nullable: timestamp of the FIRST failed S21 re-auth in the current
+  # failure run. Cleared on next successful auth. Drives the 7-day
+  # auto-unadmin clock and the 4-DM warning cadence.
+  column {
+    name     = "s21_creds_failed_at"
+    type     = "Timestamp"
+    not_null = false
+  }
+  # Nullable: when the cron last sent a failure-warning DM. Used to
+  # suppress duplicate warnings between milestones.
+  column {
+    name     = "s21_creds_last_warned_at"
+    type     = "Timestamp"
+    not_null = false
+  }
 
   primary_key = ["id"]
 }

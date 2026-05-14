@@ -8,13 +8,23 @@ import (
 	"time"
 )
 
-// BotAdmin is the (one-row) bot_admin table. Last-wins: a successful /admin
-// call replaces this row.
+// BotAdmin is the (one-row) bot_admin table. First-wins-by-identity: a
+// successful /admin call by the same telegram_id rotates the row; a
+// different telegram_id is rejected. Step-down via /unadmin OR auto-unadmin
+// (see S21CredsFailedAt).
 type BotAdmin struct {
-	TelegramID         int64
-	S21Login           string
-	S21CredsEncrypted  string
-	UpdatedAt          time.Time
+	TelegramID        int64
+	S21Login          string
+	S21CredsEncrypted string
+	UpdatedAt         time.Time
+	// S21CredsFailedAt is the timestamp of the FIRST failed re-auth in the
+	// current failure run (cleared on next successful auth). nil = healthy.
+	// The cron uses this to drive the 7-day auto-unadmin clock.
+	S21CredsFailedAt *time.Time
+	// S21CredsLastWarnedAt is the timestamp of the last warning DM sent
+	// during the current failure run. Used to schedule the four-DM cadence
+	// (first failure / 1d / 3d / 6d) without spamming on every 15-min tick.
+	S21CredsLastWarnedAt *time.Time
 }
 
 // ErrNotFound is returned when the bot has no admin set yet.

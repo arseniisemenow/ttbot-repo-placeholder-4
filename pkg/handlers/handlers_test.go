@@ -21,15 +21,18 @@ import (
 // world is the test fixture: a fresh memstore, mock messenger, mock S21,
 // fake identity service via httptest, and a fully-wired Handlers.
 type world struct {
-	t        *testing.T
-	ctx      context.Context
-	store    *memstore.Store
-	M        *messenger.Mock
-	S21      *s21.Mock
-	cipher   *crypto.Cipher
-	srv      *httptest.Server
-	handlers *handlers.Handlers
+	t         *testing.T
+	ctx       context.Context
+	store     *memstore.Store
+	M         *messenger.Mock
+	S21       *s21.Mock
+	cipher    *crypto.Cipher
+	srv       *httptest.Server
+	handlers  *handlers.Handlers
 	idService *fakeIdentityService
+	// clock is the injectable time source. Tests advance it to exercise the
+	// cron's time-driven behaviour (creds-failure milestones / auto-unadmin).
+	clock time.Time
 }
 
 // fakeIdentityService stands in for placeholder-3 in tests.
@@ -112,11 +115,37 @@ func newWorld(t *testing.T) *world {
 	idSvc := newFakeIdentityService()
 	ts := httptest.NewServer(idSvc.handler())
 	t.Cleanup(ts.Close)
-	h := handlers.New(st, mes, sm, cipher, handlers.Config{
+	w := &world{
+		t:         t,
+		ctx:       context.Background(),
+		store:     st,
+		M:         mes,
+		S21:       sm,
+		cipher:    cipher,
+		srv:       ts,
+		idService: idSvc,
+		clock:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	w.handlers = handlers.New(st, mes, sm, cipher, handlers.Config{
 		IdentityBaseURL: ts.URL,
-		Now:             func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
+		Now:             func() time.Time { return w.clock },
 	})
-	return &world{t: t, ctx: context.Background(), store: st, M: mes, S21: sm, cipher: cipher, srv: ts, handlers: h, idService: idSvc}
+	return w
+}
+
+// advanceClock moves the test clock forward by d. Subsequent Cfg.Now()
+// reads (in handlers + cron) see the new value.
+func (w *world) advanceClock(d time.Duration) {
+	w.clock = w.clock.Add(d)
+}
+
+// runCron invokes PeriodicJob synchronously. Tests use it together with
+// advanceClock to walk the creds-failure timeline.
+func (w *world) runCron() {
+	w.t.Helper()
+	if err := w.handlers.PeriodicJob(w.ctx); err != nil {
+		w.t.Fatalf("cron: %v", err)
+	}
 }
 
 func make32ByteKey() []byte {
@@ -394,5 +423,113 @@ func TestUnknownCommandIgnored(t *testing.T) {
 	w.dm(100, "alice", "/wibble")
 	if len(w.M.Calls) != 0 {
 		t.Errorf("unknown command should be silent; got %d replies", len(w.M.Calls))
+	}
+}
+
+// ---------------- creds-failure cron path ----------------
+
+// breakAdminCreds rotates the password upstream so the next re-auth fails
+// with ErrInvalidCredentials (the password stored in bot_admin no longer
+// matches what the s21 Mock expects).
+func (w *world) breakAdminCreds(login, newPassword string) {
+	w.S21.SetUser(login, newPassword, s21.Profile{Login: login, CampusName: "21 Kazan"})
+}
+
+// TestCredsHealthyTickIsSilent asserts the cron does nothing when S21 is
+// happy: no DM, no row mutation.
+func TestCredsHealthyTickIsSilent(t *testing.T) {
+	w := newWorld(t)
+	w.S21.SetUser("evangelm", "secret", s21.Profile{Login: "evangelm", CampusName: "21 Kazan"})
+	w.adminViaCommand(100, "admin", "evangelm", "secret")
+	w.runCron()
+	if len(w.M.Calls) != 0 {
+		t.Errorf("healthy cron tick should be silent; got %d msgs", len(w.M.Calls))
+	}
+	a, _ := w.store.Admin().Get(w.ctx)
+	if a.S21CredsFailedAt != nil {
+		t.Errorf("S21CredsFailedAt should stay nil on success; got %v", a.S21CredsFailedAt)
+	}
+}
+
+// TestCredsFirstFailureSetsMarkersAndWarns asserts the first failure stamps
+// both markers and DMs the admin once.
+func TestCredsFirstFailureSetsMarkersAndWarns(t *testing.T) {
+	w := newWorld(t)
+	w.S21.SetUser("evangelm", "secret", s21.Profile{Login: "evangelm", CampusName: "21 Kazan"})
+	w.adminViaCommand(100, "admin", "evangelm", "secret")
+	w.breakAdminCreds("evangelm", "newpw")
+	w.runCron()
+	w.assertReplyContains("S21 just rejected")
+	a, _ := w.store.Admin().Get(w.ctx)
+	if a.S21CredsFailedAt == nil || a.S21CredsLastWarnedAt == nil {
+		t.Errorf("expected both markers set; got failed=%v warned=%v",
+			a.S21CredsFailedAt, a.S21CredsLastWarnedAt)
+	}
+}
+
+// TestCredsRepeatedFailureNoSpam asserts the cron does NOT re-DM on the next
+// tick when no milestone has been crossed.
+func TestCredsRepeatedFailureNoSpam(t *testing.T) {
+	w := newWorld(t)
+	w.S21.SetUser("evangelm", "secret", s21.Profile{Login: "evangelm", CampusName: "21 Kazan"})
+	w.adminViaCommand(100, "admin", "evangelm", "secret")
+	w.breakAdminCreds("evangelm", "newpw")
+	w.runCron() // first DM
+	w.M.Calls = nil
+	// 15 minutes elapse, still failing — should NOT DM again.
+	w.advanceClock(15 * time.Minute)
+	w.runCron()
+	if len(w.M.Calls) != 0 {
+		t.Errorf("expected silence within a milestone; got %d msgs", len(w.M.Calls))
+	}
+}
+
+// TestCredsMilestoneAt1Day asserts that crossing the 24h milestone triggers
+// the next warning DM.
+func TestCredsMilestoneAt1Day(t *testing.T) {
+	w := newWorld(t)
+	w.S21.SetUser("evangelm", "secret", s21.Profile{Login: "evangelm", CampusName: "21 Kazan"})
+	w.adminViaCommand(100, "admin", "evangelm", "secret")
+	w.breakAdminCreds("evangelm", "newpw")
+	w.runCron() // first DM at t=0
+	w.M.Calls = nil
+	w.advanceClock(24*time.Hour + time.Minute)
+	w.runCron()
+	w.assertReplyContains("rejected your stored credentials for 1d")
+}
+
+// TestCredsAutoUnadminAt7Days asserts that 7 days of failure clears the
+// admin row and emits the final DM.
+func TestCredsAutoUnadminAt7Days(t *testing.T) {
+	w := newWorld(t)
+	w.S21.SetUser("evangelm", "secret", s21.Profile{Login: "evangelm", CampusName: "21 Kazan"})
+	w.adminViaCommand(100, "admin", "evangelm", "secret")
+	w.breakAdminCreds("evangelm", "newpw")
+	w.runCron()
+	w.M.Calls = nil
+	w.advanceClock(7*24*time.Hour + time.Minute)
+	w.runCron()
+	if _, err := w.store.Admin().Get(w.ctx); err == nil {
+		t.Error("admin row should be deleted after 7d of failure")
+	}
+	w.assertReplyContains("You are no longer the identity-bot admin")
+}
+
+// TestCredsRecoveryClearsMarkers asserts that one successful auth after a
+// failure run wipes both markers (back to healthy state).
+func TestCredsRecoveryClearsMarkers(t *testing.T) {
+	w := newWorld(t)
+	w.S21.SetUser("evangelm", "secret", s21.Profile{Login: "evangelm", CampusName: "21 Kazan"})
+	w.adminViaCommand(100, "admin", "evangelm", "secret")
+	w.breakAdminCreds("evangelm", "newpw")
+	w.runCron()
+	// Restore the original password.
+	w.S21.SetUser("evangelm", "secret", s21.Profile{Login: "evangelm", CampusName: "21 Kazan"})
+	w.advanceClock(time.Hour)
+	w.runCron()
+	a, _ := w.store.Admin().Get(w.ctx)
+	if a.S21CredsFailedAt != nil || a.S21CredsLastWarnedAt != nil {
+		t.Errorf("recovery should clear markers; got failed=%v warned=%v",
+			a.S21CredsFailedAt, a.S21CredsLastWarnedAt)
 	}
 }
