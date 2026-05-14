@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	identityclient "github.com/arseniisemenow/ttbot-repo-placeholder-2"
-	"github.com/arseniisemenow/ttbot-repo-placeholder-4/pkg/crypto"
-	"github.com/arseniisemenow/ttbot-repo-placeholder-4/pkg/handlers"
-	"github.com/arseniisemenow/ttbot-repo-placeholder-4/pkg/messenger"
-	"github.com/arseniisemenow/ttbot-repo-placeholder-4/pkg/s21"
-	"github.com/arseniisemenow/ttbot-repo-placeholder-4/pkg/store/memstore"
+	identityclient "github.com/arseniisemenow/s21-identity-client-go"
+	"github.com/arseniisemenow/s21-identity-bot/pkg/crypto"
+	"github.com/arseniisemenow/s21-identity-bot/pkg/handlers"
+	"github.com/arseniisemenow/s21-identity-bot/pkg/messenger"
+	"github.com/arseniisemenow/s21-identity-bot/pkg/s21"
+	"github.com/arseniisemenow/s21-identity-bot/pkg/store/memstore"
 )
 
 // world is the test fixture: a fresh memstore, mock messenger, mock S21,

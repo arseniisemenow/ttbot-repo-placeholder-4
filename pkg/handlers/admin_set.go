@@ -7,9 +7,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/arseniisemenow/ttbot-repo-placeholder-4/pkg/messenger"
-	"github.com/arseniisemenow/ttbot-repo-placeholder-4/pkg/s21"
-	"github.com/arseniisemenow/ttbot-repo-placeholder-4/pkg/store"
+	"github.com/arseniisemenow/s21-identity-bot/pkg/messenger"
+	"github.com/arseniisemenow/s21-identity-bot/pkg/s21"
+	"github.com/arseniisemenow/s21-identity-bot/pkg/store"
 )
 
 // adminSetPromptRegex matches the bot's two-step /admin prompt header.

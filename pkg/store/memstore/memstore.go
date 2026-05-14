@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/arseniisemenow/ttbot-repo-placeholder-4/pkg/store"
+	"github.com/arseniisemenow/s21-identity-bot/pkg/store"
 )
 
 // Store is an in-memory store.

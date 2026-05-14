@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/arseniisemenow/ttbot-repo-placeholder-4/pkg/messenger"
+	"github.com/arseniisemenow/s21-identity-bot/pkg/messenger"
 )
 
 // unadminPromptRegex matches the machine-readable header on the bot's

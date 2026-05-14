@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	identityclient "github.com/arseniisemenow/ttbot-repo-placeholder-2"
+	identityclient "github.com/arseniisemenow/s21-identity-client-go"
 
-	"github.com/arseniisemenow/ttbot-repo-placeholder-4/pkg/crypto"
-	"github.com/arseniisemenow/ttbot-repo-placeholder-4/pkg/messenger"
-	"github.com/arseniisemenow/ttbot-repo-placeholder-4/pkg/s21"
-	"github.com/arseniisemenow/ttbot-repo-placeholder-4/pkg/store"
+	"github.com/arseniisemenow/s21-identity-bot/pkg/crypto"
+	"github.com/arseniisemenow/s21-identity-bot/pkg/messenger"
+	"github.com/arseniisemenow/s21-identity-bot/pkg/s21"
+	"github.com/arseniisemenow/s21-identity-bot/pkg/store"
 )
 
 // Config carries injectable settings.
