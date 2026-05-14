@@ -87,6 +87,8 @@ func (h *Handlers) Dispatch(ctx context.Context, u *messenger.Update) error {
 		return h.handleNewReadKey(ctx, m, args)
 	case "/revoke_read_key":
 		return h.handleRevokeReadKey(ctx, m, args)
+	case "/my_keys":
+		return h.handleMyKeys(ctx, m)
 	}
 	return nil
 }
@@ -123,7 +125,8 @@ func (h *Handlers) handleStart(ctx context.Context, m *messenger.Message) error 
 			"/my_nickname — show what's stored for you.\n\n"+
 			"API access (S21 admins):\n"+
 			"/new_read_key <name> — mint a read-only identity-service API key. Two-step: I'll prompt for your S21 creds in a reply.\n"+
-			"/revoke_read_key <name> — revoke a read key you created. Same two-step flow.\n\n"+
+			"/revoke_read_key <name> — revoke a read key you created. Same two-step flow.\n"+
+			"/my_keys — list the keys you've created (names + status). No S21 prompt.\n\n"+
 			"Administrators:\n"+
 			"/admin <login>:<password> — claim the admin role (last-wins). Required so the bot can validate user nicknames against S21.\n"+
 			"/list_users — list every registered user.")
@@ -224,7 +227,11 @@ func (h *Handlers) identityClient(ctx context.Context) (*identityclient.Client, 
 	if err != nil {
 		return nil, errors.New("Internal error decrypting admin credentials. Operator must re-run /admin.")
 	}
-	return identityclient.New(h.Cfg.IdentityBaseURL, admin.S21Login, password), nil
+	opts := []identityclient.Option{}
+	if h.Cfg.IdentityServiceAPIKey != "" {
+		opts = append(opts, identityclient.WithAPIKey(h.Cfg.IdentityServiceAPIKey))
+	}
+	return identityclient.New(h.Cfg.IdentityBaseURL, admin.S21Login, password, opts...), nil
 }
 
 func parseLoginPassword(s string) (login, password string, ok bool) {

@@ -198,3 +198,39 @@ func (h *Handlers) identityServiceClient(login, password string) (*identityclien
 		identityclient.WithAPIKey(h.Cfg.IdentityServiceAPIKey),
 	), nil
 }
+
+// handleMyKeys lists the caller's read keys by name and status. No S21 auth
+// — we use the primary admin's stored creds (which the bot already needs to
+// validate nicknames) plus the bot's write-scope API key, then filter the
+// returned list to the caller's telegram_id. Useful when a user forgot what
+// they named their key and wants to revoke it.
+func (h *Handlers) handleMyKeys(ctx context.Context, m *messenger.Message) error {
+	cli, err := h.identityClient(ctx)
+	if err != nil {
+		return h.reply(ctx, m, err.Error())
+	}
+	keys, err := cli.ListAPIKeys(ctx)
+	if err != nil {
+		return h.reply(ctx, m, "Couldn't list keys: "+err.Error())
+	}
+	var mine []identityclient.APIKeyInfo
+	for _, k := range keys {
+		if k.CreatedByTelegramID == m.From.ID {
+			mine = append(mine, k)
+		}
+	}
+	if len(mine) == 0 {
+		return h.reply(ctx, m, "You have no read keys. Mint one with /new_read_key <name>.")
+	}
+	var b strings.Builder
+	b.WriteString("Your read keys:\n")
+	for _, k := range mine {
+		status := "active"
+		if k.RevokedAt != nil {
+			status = "revoked " + k.RevokedAt.UTC().Format("2006-01-02 15:04")
+		}
+		fmt.Fprintf(&b, "- %s (%s, %s)\n", k.Name, k.Scopes, status)
+	}
+	b.WriteString("\nRevoke with /revoke_read_key <name>.")
+	return h.reply(ctx, m, b.String())
+}
