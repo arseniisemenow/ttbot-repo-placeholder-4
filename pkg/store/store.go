@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	s21account "github.com/arseniisemenow/s21-account-go"
 )
 
 // BotAdmin is the (one-row) bot_admin table. First-wins-by-identity: a
@@ -34,7 +36,22 @@ var ErrNotFound = errors.New("store: not found")
 type Store interface {
 	Admin() AdminRepo
 	PendingDeletes() PendingDeleteRepo
+	S21Accounts() S21AccountRepo
 	Close() error
+}
+
+// S21Account is re-exported from the shared package so the rest of the bot
+// uses one canonical type.
+type S21Account = s21account.S21Account
+
+// S21AccountRepo persists logged-in accounts. The shape matches
+// s21account.Store exactly (so any S21AccountRepo also satisfies that
+// interface). List MUST return rows ordered by created_at ASC.
+type S21AccountRepo interface {
+	Get(ctx context.Context, telegramID int64) (s21account.S21Account, error)
+	List(ctx context.Context) ([]s21account.S21Account, error)
+	Upsert(ctx context.Context, a s21account.S21Account) error
+	Delete(ctx context.Context, telegramID int64) error
 }
 
 // AdminRepo persists the single admin row.

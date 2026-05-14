@@ -87,3 +87,66 @@ resource "yandex_ydb_table" "pending_deletes" {
 
   primary_key = ["chat_id", "message_id"]
 }
+
+# s21_accounts — multi-row replacement for bot_admin. One row per Telegram
+# user who's run /login. Same shape as ttbot's table. Failure markers drive
+# the s21-account-go cron cadence (1d/3d/6d warnings, auto-logout at 7d).
+# Bot_admin's single row gets migrated here at function bootstrap; once
+# verified, the bot_admin resource can be removed in a follow-up apply.
+resource "yandex_ydb_table" "s21_accounts" {
+  path              = "s21_accounts"
+  connection_string = yandex_ydb_database_serverless.db.ydb_full_endpoint
+
+  column {
+    name     = "telegram_id"
+    type     = "Uint64"
+    not_null = true
+  }
+  column {
+    name     = "s21_login"
+    type     = "Utf8"
+    not_null = true
+  }
+  column {
+    name     = "s21_creds_encrypted"
+    type     = "Utf8"
+    not_null = true
+  }
+  column {
+    name     = "campus_id"
+    type     = "Utf8"
+    not_null = false
+  }
+  column {
+    name     = "campus_name"
+    type     = "Utf8"
+    not_null = false
+  }
+  column {
+    name     = "created_at"
+    type     = "Timestamp"
+    not_null = true
+  }
+  column {
+    name     = "updated_at"
+    type     = "Timestamp"
+    not_null = true
+  }
+  column {
+    name     = "last_used_at"
+    type     = "Timestamp"
+    not_null = false
+  }
+  column {
+    name     = "s21_creds_failed_at"
+    type     = "Timestamp"
+    not_null = false
+  }
+  column {
+    name     = "s21_creds_last_warned_at"
+    type     = "Timestamp"
+    not_null = false
+  }
+
+  primary_key = ["telegram_id"]
+}

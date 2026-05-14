@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	s21account "github.com/arseniisemenow/s21-account-go"
 	identityclient "github.com/arseniisemenow/s21-identity-client-go"
 
 	"github.com/arseniisemenow/s21-identity-bot/pkg/messenger"
@@ -199,17 +200,23 @@ func (h *Handlers) identityServiceClient(login, password string) (*identityclien
 	), nil
 }
 
-// handleMyKeys lists the caller's read keys by name and status. No S21 auth
-// — we use the primary admin's stored creds (which the bot already needs to
-// validate nicknames) plus the bot's write-scope API key, then filter the
-// returned list to the caller's telegram_id. Useful when a user forgot what
-// they named their key and wants to revoke it.
+// handleMyKeys lists the caller's read keys by name and status. No S21
+// prompt — we route through PickHealthy to grab whichever logged-in row
+// has working creds, then filter the listing to the caller's telegram_id.
+// Useful when a user forgot what they named their key and wants to revoke it.
 func (h *Handlers) handleMyKeys(ctx context.Context, m *messenger.Message) error {
-	cli, err := h.identityClient(ctx)
-	if err != nil {
-		return h.reply(ctx, m, err.Error())
+	var keys []identityclient.APIKeyInfo
+	err := h.withIdentityClient(ctx, func(cli *identityclient.Client) error {
+		got, err := cli.ListAPIKeys(ctx)
+		if err != nil {
+			return err
+		}
+		keys = got
+		return nil
+	})
+	if errors.Is(err, s21account.ErrNoHealthy) {
+		return h.reply(ctx, m, "No healthy S21 accounts available right now — somebody needs to /login.")
 	}
-	keys, err := cli.ListAPIKeys(ctx)
 	if err != nil {
 		return h.reply(ctx, m, "Couldn't list keys: "+err.Error())
 	}

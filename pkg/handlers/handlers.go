@@ -1,5 +1,4 @@
-// Package handlers wires Telegram updates to identity-service calls and the
-// local bot_admin row.
+// Package handlers wires Telegram updates to identity-service calls.
 package handlers
 
 import (
@@ -7,11 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
 
+	s21account "github.com/arseniisemenow/s21-account-go"
 	identityclient "github.com/arseniisemenow/s21-identity-client-go"
 
 	"github.com/arseniisemenow/s21-identity-bot/pkg/crypto"
@@ -22,7 +20,7 @@ import (
 
 // Config carries injectable settings.
 type Config struct {
-	IdentityBaseURL string // base URL of placeholder-3 identity service
+	IdentityBaseURL string // base URL of the identity service
 	// IdentityServiceAPIKey is the bot's own write-scope X-Api-Key, used to
 	// call /admin/keys for read-key minting/revocation. Created via the
 	// admin CLI once at bootstrap, then pasted into the bot's env.
@@ -57,19 +55,16 @@ func (h *Handlers) Dispatch(ctx context.Context, u *messenger.Update) error {
 		// Identity bot only operates in DMs.
 		return nil
 	}
-	// Credentials-reply detection runs BEFORE the command switch: a /key-flow
-	// reply has text that looks like "login:password" with no leading slash,
-	// so it'd otherwise fall through. The detection is structural — must be
-	// a reply to a bot message whose first line carries our [KEY_OP=...]
-	// header.
+	// Force-reply detectors run BEFORE the command switch — credential
+	// replies have no leading slash so they'd otherwise fall through.
 	if isKeyFlowReply(m) {
 		return h.handleKeyReply(ctx, m)
 	}
-	if isUnadminReply(m) {
-		return h.handleUnadminReply(ctx, m)
+	if isLogoutReply(m) {
+		return h.handleLogoutReply(ctx, m)
 	}
-	if isAdminSetReply(m) {
-		return h.handleAdminSetReply(ctx, m)
+	if isLoginReply(m) {
+		return h.handleLoginReply(ctx, m)
 	}
 	text := strings.TrimSpace(m.Text)
 	if text == "" {
@@ -79,24 +74,24 @@ func (h *Handlers) Dispatch(ctx context.Context, u *messenger.Update) error {
 	switch cmd {
 	case "/start", "/help":
 		return h.handleStart(ctx, m)
-	case "/admin":
-		return h.handleAdmin(ctx, m, args)
+	case "/login":
+		return h.handleLogin(ctx, m, args)
+	case "/logout":
+		return h.handleLogout(ctx, m)
+	case "/whoami":
+		return h.handleWhoami(ctx, m)
 	case "/provide_nickname":
 		return h.handleProvideNickname(ctx, m, args)
 	case "/remove_nickname":
 		return h.handleRemoveNickname(ctx, m)
 	case "/my_nickname":
 		return h.handleMyNickname(ctx, m)
-	case "/list_users":
-		return h.handleListUsers(ctx, m)
 	case "/new_read_key":
 		return h.handleNewReadKey(ctx, m, args)
 	case "/revoke_read_key":
 		return h.handleRevokeReadKey(ctx, m, args)
 	case "/my_keys":
 		return h.handleMyKeys(ctx, m)
-	case "/unadmin":
-		return h.handleUnadmin(ctx, m)
 	}
 	return nil
 }
@@ -127,50 +122,18 @@ func (h *Handlers) reply(ctx context.Context, m *messenger.Message, text string)
 func (h *Handlers) handleStart(ctx context.Context, m *messenger.Message) error {
 	return h.reply(ctx, m,
 		"Hi! I'm the S21 identity bot.\n\n"+
-			"Commands:\n"+
+			"Nickname registration:\n"+
 			"/provide_nickname <s21_login> — register your S21 nickname for this Telegram account.\n"+
 			"/remove_nickname — clear your registered nickname.\n"+
 			"/my_nickname — show what's stored for you.\n\n"+
-			"API access (S21 admins):\n"+
-			"/new_read_key <name> — mint a read-only identity-service API key. Two-step: I'll prompt for your S21 creds in a reply.\n"+
-			"/revoke_read_key <name> — revoke a read key you created. Same two-step flow.\n"+
-			"/my_keys — list the keys you've created (names + status). No S21 prompt.\n\n"+
-			"Administrators:\n"+
-			"/admin — claim the admin role. Two-step: I'll prompt for your S21 creds in a reply, validate against S21, and delete your reply immediately. First-wins by identity: only the original admin can rotate later.\n"+
-			"/unadmin — step down as admin (two-step confirm). Only the current admin can run this.\n"+
-			"/list_users — list every registered user.")
-}
-
-// handleAdmin is the first half of the two-step admin flow:
-//
-//  1. /admin (no args) — send a force-reply prompt asking for `login:password`.
-//  2. handleAdminSetReply (admin_set.go) — read the reply, scrub the message,
-//     validate against S21, store the encrypted row.
-//
-// First-wins by identity: only the original admin's telegram_id can re-run
-// /admin to rotate the row. A different telegram_id gets rejected here so we
-// never even prompt them. The same check repeats in step 2 for defence.
-//
-// Inline-args form (`/admin login:password`) is rejected — Telegram keeps
-// command text in chat history so creds in the command line are exposed.
-func (h *Handlers) handleAdmin(ctx context.Context, m *messenger.Message, args string) error {
-	if strings.TrimSpace(args) != "" {
-		return h.reply(ctx, m,
-			"Inline credentials are no longer accepted because Telegram keeps them in chat history. "+
-				"Run /admin with no arguments — I'll prompt you to reply with your S21 creds and delete that reply immediately.")
-	}
-	if existing, err := h.Store.Admin().Get(ctx); err == nil && existing.TelegramID != m.From.ID {
-		return h.reply(ctx, m,
-			"This bot already has an admin and only they can rotate the credentials. "+
-				"If you ARE the admin, message me from your registered Telegram account.")
-	}
-	prompt := "[ADMIN_OP=set]\n\n" +
-		"Reply with your S21 credentials as `login:password` on a single line. " +
-		"I'll authenticate against S21, encrypt the result, and **delete your reply immediately** so the creds don't linger in this chat."
-	if _, err := h.M.SendMessageWithForceReply(ctx, m.Chat.ID, prompt, "login:password"); err != nil {
-		return h.reply(ctx, m, "Couldn't send the prompt: "+err.Error())
-	}
-	return nil
+			"S21 session (the bot uses your S21 creds to validate nicknames):\n"+
+			"/login — store your S21 creds. Two-step: I'll prompt you to reply with `login:password`, validate against S21, and delete your reply immediately.\n"+
+			"/logout — remove your stored S21 creds. Two-step confirm.\n"+
+			"/whoami — show whether you're logged in and the health of your creds.\n\n"+
+			"API keys:\n"+
+			"/new_read_key <name> — mint a read-only identity-service API key. Two-step.\n"+
+			"/revoke_read_key <name> — revoke a read key you created. Two-step.\n"+
+			"/my_keys — list the keys you've created.")
 }
 
 func (h *Handlers) handleProvideNickname(ctx context.Context, m *messenger.Message, args string) error {
@@ -178,34 +141,45 @@ func (h *Handlers) handleProvideNickname(ctx context.Context, m *messenger.Messa
 	if nick == "" {
 		return h.reply(ctx, m, "Usage: /provide_nickname <s21_login>")
 	}
-	cli, err := h.identityClient(ctx)
-	if err != nil {
-		return h.reply(ctx, m, err.Error())
+	err := h.withIdentityClient(ctx, func(cli *identityclient.Client) error {
+		_, err := cli.PutUser(ctx, m.From.ID, nick)
+		return err
+	})
+	if errors.Is(err, s21account.ErrNoHealthy) {
+		return h.reply(ctx, m, "No healthy S21 accounts available right now — somebody needs to /login.")
 	}
-	if _, err := cli.PutUser(ctx, m.From.ID, nick); err != nil {
+	if err != nil {
 		return h.reply(ctx, m, identityErrorMessage(err))
 	}
 	return h.reply(ctx, m, "Nickname registered: "+nick+".")
 }
 
 func (h *Handlers) handleRemoveNickname(ctx context.Context, m *messenger.Message) error {
-	cli, err := h.identityClient(ctx)
-	if err != nil {
-		return h.reply(ctx, m, err.Error())
+	err := h.withIdentityClient(ctx, func(cli *identityclient.Client) error {
+		return cli.DeleteUser(ctx, m.From.ID)
+	})
+	if errors.Is(err, s21account.ErrNoHealthy) {
+		return h.reply(ctx, m, "No healthy S21 accounts available right now — somebody needs to /login.")
 	}
-	if err := cli.DeleteUser(ctx, m.From.ID); err != nil {
+	if err != nil {
 		return h.reply(ctx, m, identityErrorMessage(err))
 	}
 	return h.reply(ctx, m, "Nickname cleared.")
 }
 
 func (h *Handlers) handleMyNickname(ctx context.Context, m *messenger.Message) error {
-	cli, err := h.identityClient(ctx)
-	if err != nil {
-		return h.reply(ctx, m, err.Error())
-	}
-	u, err := cli.GetUserByTelegram(ctx, m.From.ID)
+	var u identityclient.User
+	err := h.withIdentityClient(ctx, func(cli *identityclient.Client) error {
+		got, err := cli.GetUserByTelegram(ctx, m.From.ID)
+		if err != nil {
+			return err
+		}
+		u = got
+		return nil
+	})
 	switch {
+	case errors.Is(err, s21account.ErrNoHealthy):
+		return h.reply(ctx, m, "No healthy S21 accounts available right now — somebody needs to /login.")
 	case errors.Is(err, identityclient.ErrNotFound):
 		return h.reply(ctx, m, "You don't have a nickname registered. Run /provide_nickname <s21_login>.")
 	case err != nil:
@@ -217,34 +191,27 @@ func (h *Handlers) handleMyNickname(ctx context.Context, m *messenger.Message) e
 	))
 }
 
-func (h *Handlers) handleListUsers(ctx context.Context, m *messenger.Message) error {
-	admin, err := h.Store.Admin().Get(ctx)
-	if err != nil || admin.TelegramID != m.From.ID {
-		return h.reply(ctx, m, "Only the identity-bot admin can run /list_users.")
-	}
-	// /list_users on the service side doesn't exist — by design, the service
-	// only resolves by telegram_id or nickname. For an admin-level listing,
-	// the future approach is a `/admin/users` endpoint. For now we explain
-	// the limitation rather than fake it.
-	return h.reply(ctx, m, "Listing all users is not yet implemented — the service exposes lookups by telegram_id and by nickname only. Use the service URL directly if you need a full dump.")
-}
-
 // ---------------- helpers ----------------
 
-func (h *Handlers) identityClient(ctx context.Context) (*identityclient.Client, error) {
-	admin, err := h.Store.Admin().Get(ctx)
-	if err != nil {
-		return nil, errors.New("Identity bot has no admin set yet. Ask the operator to run /admin <login>:<password>.")
-	}
-	password, err := h.Cipher.Decrypt(admin.S21CredsEncrypted)
-	if err != nil {
-		return nil, errors.New("Internal error decrypting admin credentials. Operator must re-run /admin.")
-	}
-	opts := []identityclient.Option{}
-	if h.Cfg.IdentityServiceAPIKey != "" {
-		opts = append(opts, identityclient.WithAPIKey(h.Cfg.IdentityServiceAPIKey))
-	}
-	return identityclient.New(h.Cfg.IdentityBaseURL, admin.S21Login, password, opts...), nil
+// withIdentityClient runs `fn` against an identity-service client whose
+// X-S21-Token is sourced from a healthy s21_accounts row. On
+// identityclient.ErrInvalidS21Token from `fn`, marks that row bad (via the
+// shared package's PickHealthy) and retries with the next healthy row.
+func (h *Handlers) withIdentityClient(ctx context.Context, fn func(*identityclient.Client) error) error {
+	return s21account.PickHealthy(ctx, h.Store.S21Accounts(), h.Cipher, h.Cfg.Now(),
+		func(login, password string) error {
+			opts := []identityclient.Option{}
+			if h.Cfg.IdentityServiceAPIKey != "" {
+				opts = append(opts, identityclient.WithAPIKey(h.Cfg.IdentityServiceAPIKey))
+			}
+			cli := identityclient.New(h.Cfg.IdentityBaseURL, login, password, opts...)
+			err := fn(cli)
+			if errors.Is(err, identityclient.ErrInvalidS21Token) {
+				// Tell PickHealthy to mark this row bad and try the next.
+				return s21account.ErrInvalidCredentials
+			}
+			return err
+		})
 }
 
 func parseLoginPassword(s string) (login, password string, ok bool) {
@@ -258,7 +225,7 @@ func parseLoginPassword(s string) (login, password string, ok bool) {
 func identityErrorMessage(err error) string {
 	switch {
 	case errors.Is(err, identityclient.ErrInvalidS21Token):
-		return "Identity service rejected the admin's S21 credentials. Operator must re-run /admin."
+		return "Identity service rejected the stored S21 credentials. Run /login with fresh creds."
 	case errors.Is(err, identityclient.ErrNotFound):
 		return "Not found."
 	case errors.Is(err, identityclient.ErrConflict):
@@ -278,7 +245,3 @@ func defaultIfEmpty(s, def string) string {
 	}
 	return s
 }
-
-// silence unused imports if a refactor leaves them dangling.
-var _ = sort.Slice
-var _ = strconv.Itoa

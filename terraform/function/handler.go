@@ -104,6 +104,9 @@ func bootstrap() {
 		IdentityBaseURL:       identityURL,
 		IdentityServiceAPIKey: apiKey,
 	})
+	if err := handlers.MigrateBotAdminToS21Accounts(context.Background(), st); err != nil {
+		log.Printf("bot_admin → s21_accounts migration: %v", err)
+	}
 }
 
 // Handler is the Yandex Cloud Function entrypoint.
