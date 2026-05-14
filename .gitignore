@@ -6,3 +6,6 @@ terraform/.terraform.lock.hcl
 terraform/terraform.tfstate
 terraform/terraform.tfstate.backup
 terraform/terraform.tfvars
+terraform/cron-function.zip
+terraform/cron-function/cron-function
+assets/
