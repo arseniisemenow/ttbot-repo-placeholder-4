@@ -68,6 +68,9 @@ func (h *Handlers) Dispatch(ctx context.Context, u *messenger.Update) error {
 	if isUnadminReply(m) {
 		return h.handleUnadminReply(ctx, m)
 	}
+	if isAdminSetReply(m) {
+		return h.handleAdminSetReply(ctx, m)
+	}
 	text := strings.TrimSpace(m.Text)
 	if text == "" {
 		return nil
@@ -133,37 +136,41 @@ func (h *Handlers) handleStart(ctx context.Context, m *messenger.Message) error 
 			"/revoke_read_key <name> — revoke a read key you created. Same two-step flow.\n"+
 			"/my_keys — list the keys you've created (names + status). No S21 prompt.\n\n"+
 			"Administrators:\n"+
-			"/admin <login>:<password> — claim the admin role (last-wins). Required so the bot can validate user nicknames against S21.\n"+
+			"/admin — claim the admin role. Two-step: I'll prompt for your S21 creds in a reply, validate against S21, and delete your reply immediately. First-wins by identity: only the original admin can rotate later.\n"+
 			"/unadmin — step down as admin (two-step confirm). Only the current admin can run this.\n"+
 			"/list_users — list every registered user.")
 }
 
+// handleAdmin is the first half of the two-step admin flow:
+//
+//  1. /admin (no args) — send a force-reply prompt asking for `login:password`.
+//  2. handleAdminSetReply (admin_set.go) — read the reply, scrub the message,
+//     validate against S21, store the encrypted row.
+//
+// First-wins by identity: only the original admin's telegram_id can re-run
+// /admin to rotate the row. A different telegram_id gets rejected here so we
+// never even prompt them. The same check repeats in step 2 for defence.
+//
+// Inline-args form (`/admin login:password`) is rejected — Telegram keeps
+// command text in chat history so creds in the command line are exposed.
 func (h *Handlers) handleAdmin(ctx context.Context, m *messenger.Message, args string) error {
-	login, password, ok := parseLoginPassword(args)
-	if !ok {
-		return h.reply(ctx, m, "Usage: /admin <login>:<password>")
+	if strings.TrimSpace(args) != "" {
+		return h.reply(ctx, m,
+			"Inline credentials are no longer accepted because Telegram keeps them in chat history. "+
+				"Run /admin with no arguments — I'll prompt you to reply with your S21 creds and delete that reply immediately.")
 	}
-	profile, err := h.S21.Authenticate(ctx, login, password)
-	switch {
-	case errors.Is(err, s21.ErrInvalidCredentials):
-		return h.reply(ctx, m, "S21 rejected those credentials.")
-	case err != nil:
-		return h.reply(ctx, m, "S21 is unavailable right now. Try again later.")
+	if existing, err := h.Store.Admin().Get(ctx); err == nil && existing.TelegramID != m.From.ID {
+		return h.reply(ctx, m,
+			"This bot already has an admin and only they can rotate the credentials. "+
+				"If you ARE the admin, message me from your registered Telegram account.")
 	}
-	enc, err := h.Cipher.Encrypt(password)
-	if err != nil {
-		return err
+	prompt := "[ADMIN_OP=set]\n\n" +
+		"Reply with your S21 credentials as `login:password` on a single line. " +
+		"I'll authenticate against S21, encrypt the result, and **delete your reply immediately** so the creds don't linger in this chat."
+	if _, err := h.M.SendMessageWithForceReply(ctx, m.Chat.ID, prompt, "login:password"); err != nil {
+		return h.reply(ctx, m, "Couldn't send the prompt: "+err.Error())
 	}
-	row := store.BotAdmin{
-		TelegramID:        m.From.ID,
-		S21Login:          login,
-		S21CredsEncrypted: enc,
-		UpdatedAt:         h.Cfg.Now().UTC(),
-	}
-	if err := h.Store.Admin().Set(ctx, row); err != nil {
-		return err
-	}
-	return h.reply(ctx, m, "You are now the identity-bot admin ("+profile.Login+", "+profile.CampusName+"). The bot will use your S21 credentials to validate user nicknames.")
+	return nil
 }
 
 func (h *Handlers) handleProvideNickname(ctx context.Context, m *messenger.Message, args string) error {

@@ -143,6 +143,43 @@ func (w *world) dm(from int64, username, text string) {
 	}
 }
 
+// dmReply dispatches a private-chat message that's a reply to the bot's most
+// recent outgoing message. Used to exercise force-reply flows (/admin step 2,
+// /unadmin confirm, /new_read_key creds prompt).
+func (w *world) dmReply(from int64, username, text string) {
+	w.t.Helper()
+	if len(w.M.Calls) == 0 {
+		w.t.Fatal("no prior bot message to reply to")
+	}
+	last := w.M.Calls[len(w.M.Calls)-1]
+	upd := &messenger.Update{
+		Message: &messenger.Message{
+			MessageID: 999,
+			Chat:      messenger.Chat{ID: from, Type: "private"},
+			From:      &messenger.User{ID: from, Username: username},
+			Text:      text,
+			ReplyTo: &messenger.Message{
+				MessageID: int64(len(w.M.Calls)),
+				From:      &messenger.User{ID: 0, IsBot: true},
+				Text:      last.Text,
+			},
+		},
+	}
+	if err := w.handlers.Dispatch(w.ctx, upd); err != nil {
+		w.t.Fatalf("dispatch reply: %v", err)
+	}
+}
+
+// adminViaCommand exercises the two-step /admin flow end-to-end: send the
+// command, then reply with credentials. Resets w.M.Calls afterwards so tests
+// can assert on subsequent replies cleanly.
+func (w *world) adminViaCommand(tid int64, username, login, password string) {
+	w.t.Helper()
+	w.dm(tid, username, "/admin")
+	w.dmReply(tid, username, login+":"+password)
+	w.M.Calls = nil
+}
+
 // assertReplyContains asserts at least one outbound message contains substr.
 func (w *world) assertReplyContains(substr string) {
 	w.t.Helper()
@@ -168,8 +205,11 @@ func TestStartGreets(t *testing.T) {
 func TestAdminSetsRow(t *testing.T) {
 	w := newWorld(t)
 	w.S21.SetUser("evangelm", "secret", s21.Profile{Login: "evangelm", CampusID: "kazan", CampusName: "21 Kazan"})
-	w.dm(100, "alice", "/admin evangelm:secret")
-	w.assertReplyContains("admin")
+	// Two-step: command first, then reply with creds.
+	w.dm(100, "alice", "/admin")
+	w.assertReplyContains("[ADMIN_OP=set]")
+	w.dmReply(100, "alice", "evangelm:secret")
+	w.assertReplyContains("now the identity-bot admin")
 	a, err := w.store.Admin().Get(w.ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -181,33 +221,75 @@ func TestAdminSetsRow(t *testing.T) {
 	if err != nil || pw != "secret" {
 		t.Errorf("decrypt: pw=%q err=%v", pw, err)
 	}
+	// Bot must delete the user's creds message.
+	if !hasDeleteCall(w.M.Calls, 100, 999) {
+		t.Errorf("expected DeleteMessage for the user's creds message; got %+v", w.M.Calls)
+	}
+}
+
+func TestAdminRejectsInlineArgs(t *testing.T) {
+	w := newWorld(t)
+	w.dm(100, "alice", "/admin evangelm:secret")
+	w.assertReplyContains("Inline credentials are no longer accepted")
+	if _, err := w.store.Admin().Get(w.ctx); err == nil {
+		t.Error("admin row should not be set when inline args used")
+	}
 }
 
 func TestAdminBadCredentials(t *testing.T) {
 	w := newWorld(t)
-	w.dm(100, "alice", "/admin nobody:wrong")
+	w.dm(100, "alice", "/admin")
+	w.dmReply(100, "alice", "nobody:wrong")
 	w.assertReplyContains("rejected")
 	if _, err := w.store.Admin().Get(w.ctx); err == nil {
 		t.Error("admin row should not be set on bad credentials")
 	}
 }
 
-func TestAdminLastWins(t *testing.T) {
+// TestAdminFirstWinsByIdentity verifies the same-identity-can-rotate /
+// different-identity-rejected rule.
+func TestAdminFirstWinsByIdentity(t *testing.T) {
 	w := newWorld(t)
 	w.S21.SetUser("a", "pw", s21.Profile{Login: "a", CampusName: "21 Kazan"})
 	w.S21.SetUser("b", "pw2", s21.Profile{Login: "b", CampusName: "21 Kazan"})
-	w.dm(100, "user_a", "/admin a:pw")
-	w.dm(200, "user_b", "/admin b:pw2")
+
+	// user_a claims the slot.
+	w.dm(100, "user_a", "/admin")
+	w.dmReply(100, "user_a", "a:pw")
 	a, _ := w.store.Admin().Get(w.ctx)
-	if a.TelegramID != 200 || a.S21Login != "b" {
-		t.Errorf("last-wins expected b/200; got %+v", a)
+	if a.TelegramID != 100 || a.S21Login != "a" {
+		t.Fatalf("first /admin expected to set user_a/100; got %+v", a)
+	}
+
+	// user_b tries to take over — rejected before the prompt is sent.
+	w.M.Calls = nil
+	w.dm(200, "user_b", "/admin")
+	w.assertReplyContains("already has an admin")
+	a, _ = w.store.Admin().Get(w.ctx)
+	if a.TelegramID != 100 || a.S21Login != "a" {
+		t.Errorf("expected user_a still admin; got %+v", a)
+	}
+
+	// user_a rotates — same telegram_id allowed.
+	w.M.Calls = nil
+	w.S21.SetUser("a2", "pw3", s21.Profile{Login: "a2", CampusName: "21 Kazan"})
+	w.dm(100, "user_a", "/admin")
+	w.dmReply(100, "user_a", "a2:pw3")
+	a, _ = w.store.Admin().Get(w.ctx)
+	if a.TelegramID != 100 || a.S21Login != "a2" {
+		t.Errorf("rotation expected a2/100; got %+v", a)
 	}
 }
 
-func TestAdminMalformedUsage(t *testing.T) {
-	w := newWorld(t)
-	w.dm(100, "a", "/admin nocolon")
-	w.assertReplyContains("Usage:")
+// hasDeleteCall reports whether the mock recorded a DeleteMessage for the
+// given (chatID, messageID).
+func hasDeleteCall(calls []messenger.MockCall, chat, msg int64) bool {
+	for _, c := range calls {
+		if c.Method == "DeleteMessage" && c.ChatID == chat && c.MessageID == msg {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------- /provide_nickname ----------------
@@ -221,7 +303,7 @@ func TestProvideNicknameRequiresAdmin(t *testing.T) {
 func TestProvideNicknameSuccess(t *testing.T) {
 	w := newWorld(t)
 	w.S21.SetUser("evangelm", "secret", s21.Profile{Login: "evangelm", CampusName: "21 Kazan", CampusID: "kazan"})
-	w.dm(100, "admin", "/admin evangelm:secret")
+	w.adminViaCommand(100, "admin", "evangelm", "secret")
 	w.M.Calls = nil
 	w.dm(200, "alice", "/provide_nickname alice_s21")
 	w.assertReplyContains("registered")
@@ -235,7 +317,7 @@ func TestProvideNicknameSuccess(t *testing.T) {
 func TestProvideNicknameEmpty(t *testing.T) {
 	w := newWorld(t)
 	w.S21.SetUser("evangelm", "secret", s21.Profile{Login: "evangelm", CampusName: "21 Kazan"})
-	w.dm(100, "admin", "/admin evangelm:secret")
+	w.adminViaCommand(100, "admin", "evangelm", "secret")
 	w.M.Calls = nil
 	w.dm(200, "alice", "/provide_nickname  ")
 	w.assertReplyContains("Usage:")
@@ -246,7 +328,7 @@ func TestProvideNicknameEmpty(t *testing.T) {
 func TestRemoveNickname(t *testing.T) {
 	w := newWorld(t)
 	w.S21.SetUser("evangelm", "secret", s21.Profile{Login: "evangelm", CampusName: "21 Kazan"})
-	w.dm(100, "admin", "/admin evangelm:secret")
+	w.adminViaCommand(100, "admin", "evangelm", "secret")
 	w.dm(200, "alice", "/provide_nickname alice_s21")
 	w.M.Calls = nil
 	w.dm(200, "alice", "/remove_nickname")
@@ -258,7 +340,7 @@ func TestRemoveNickname(t *testing.T) {
 func TestMyNicknameNotRegistered(t *testing.T) {
 	w := newWorld(t)
 	w.S21.SetUser("evangelm", "secret", s21.Profile{Login: "evangelm", CampusName: "21 Kazan"})
-	w.dm(100, "admin", "/admin evangelm:secret")
+	w.adminViaCommand(100, "admin", "evangelm", "secret")
 	w.M.Calls = nil
 	w.dm(200, "alice", "/my_nickname")
 	w.assertReplyContains("don't have a nickname registered")
@@ -267,7 +349,7 @@ func TestMyNicknameNotRegistered(t *testing.T) {
 func TestMyNicknameSuccess(t *testing.T) {
 	w := newWorld(t)
 	w.S21.SetUser("evangelm", "secret", s21.Profile{Login: "evangelm", CampusName: "21 Kazan"})
-	w.dm(100, "admin", "/admin evangelm:secret")
+	w.adminViaCommand(100, "admin", "evangelm", "secret")
 	w.dm(200, "alice", "/provide_nickname alice_s21")
 	w.M.Calls = nil
 	w.dm(200, "alice", "/my_nickname")
@@ -280,7 +362,7 @@ func TestMyNicknameSuccess(t *testing.T) {
 func TestListUsersRejectsNonAdmin(t *testing.T) {
 	w := newWorld(t)
 	w.S21.SetUser("evangelm", "secret", s21.Profile{Login: "evangelm", CampusName: "21 Kazan"})
-	w.dm(100, "admin", "/admin evangelm:secret")
+	w.adminViaCommand(100, "admin", "evangelm", "secret")
 	w.M.Calls = nil
 	w.dm(999, "rando", "/list_users")
 	w.assertReplyContains("Only the identity-bot admin")
