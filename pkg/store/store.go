@@ -31,6 +31,9 @@ type Store interface {
 type AdminRepo interface {
 	Get(ctx context.Context) (BotAdmin, error)
 	Set(ctx context.Context, a BotAdmin) error
+	// Delete clears the admin row. Idempotent: deleting when no row exists
+	// returns nil. Used by /unadmin to let the current admin step down.
+	Delete(ctx context.Context) error
 }
 
 // PendingDelete is one row in pending_deletes — a message the bot has DMed

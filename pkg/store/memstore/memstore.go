@@ -53,6 +53,13 @@ func (r adminRepo) Set(_ context.Context, a store.BotAdmin) error {
 	return nil
 }
 
+func (r adminRepo) Delete(_ context.Context) error {
+	r.s.mu.Lock()
+	defer r.s.mu.Unlock()
+	r.s.admin = nil
+	return nil
+}
+
 type pendingRepo struct{ s *Store }
 
 func (r pendingRepo) Insert(_ context.Context, p store.PendingDelete) error {

@@ -102,6 +102,13 @@ VALUES (1, $tid, $login, $creds, $uat);`
 		table.WithTxSettings(table.TxSettings(table.WithSerializableReadWrite())))
 }
 
+func (r adminRepo) Delete(ctx context.Context) error {
+	return r.s.driver.Table().DoTx(ctx, func(ctx context.Context, tx table.TransactionActor) error {
+		_, err := tx.Execute(ctx, "DELETE FROM bot_admin WHERE id = 1;", nil)
+		return err
+	}, table.WithIdempotent())
+}
+
 // ---------------- pending deletes ----------------
 
 type pendingRepo struct{ s *Store }

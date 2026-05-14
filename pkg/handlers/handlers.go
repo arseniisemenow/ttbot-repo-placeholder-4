@@ -65,6 +65,9 @@ func (h *Handlers) Dispatch(ctx context.Context, u *messenger.Update) error {
 	if isKeyFlowReply(m) {
 		return h.handleKeyReply(ctx, m)
 	}
+	if isUnadminReply(m) {
+		return h.handleUnadminReply(ctx, m)
+	}
 	text := strings.TrimSpace(m.Text)
 	if text == "" {
 		return nil
@@ -89,6 +92,8 @@ func (h *Handlers) Dispatch(ctx context.Context, u *messenger.Update) error {
 		return h.handleRevokeReadKey(ctx, m, args)
 	case "/my_keys":
 		return h.handleMyKeys(ctx, m)
+	case "/unadmin":
+		return h.handleUnadmin(ctx, m)
 	}
 	return nil
 }
@@ -129,6 +134,7 @@ func (h *Handlers) handleStart(ctx context.Context, m *messenger.Message) error 
 			"/my_keys — list the keys you've created (names + status). No S21 prompt.\n\n"+
 			"Administrators:\n"+
 			"/admin <login>:<password> — claim the admin role (last-wins). Required so the bot can validate user nicknames against S21.\n"+
+			"/unadmin — step down as admin (two-step confirm). Only the current admin can run this.\n"+
 			"/list_users — list every registered user.")
 }
 
