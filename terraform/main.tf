@@ -35,6 +35,14 @@ resource "yandex_resourcemanager_folder_iam_member" "fn_sa_ydb_editor" {
   member    = "serviceAccount:${yandex_iam_service_account.fn_sa.id}"
 }
 
+# The cron trigger calls the cron function as this SA. Without folder-level
+# functions.invoker the trigger fails to invoke on schedule.
+resource "yandex_resourcemanager_folder_iam_member" "fn_sa_function_invoker" {
+  folder_id = var.yc_folder_id
+  role      = "serverless.functions.invoker"
+  member    = "serviceAccount:${yandex_iam_service_account.fn_sa.id}"
+}
+
 data "archive_file" "function" {
   type        = "zip"
   source_dir  = "${path.module}/function"
