@@ -2,7 +2,7 @@ module github.com/arseniisemenow/ttbot-repo-placeholder-4/terraform/cron-functio
 
 go 1.23.0
 
-require github.com/arseniisemenow/ttbot-repo-placeholder-4 v0.2.3
+require github.com/arseniisemenow/ttbot-repo-placeholder-4 v0.2.4
 
 require (
 	github.com/arseniisemenow/s21auto-client-go v0.3.2 // indirect
