@@ -10,13 +10,13 @@ import (
 	"os"
 	"sync"
 
-	"github.com/arseniisemenow/ttbot-repo-placeholder-4/pkg/crypto"
-	"github.com/arseniisemenow/ttbot-repo-placeholder-4/pkg/handlers"
-	"github.com/arseniisemenow/ttbot-repo-placeholder-4/pkg/messenger"
-	"github.com/arseniisemenow/ttbot-repo-placeholder-4/pkg/s21"
-	"github.com/arseniisemenow/ttbot-repo-placeholder-4/pkg/store"
-	"github.com/arseniisemenow/ttbot-repo-placeholder-4/pkg/store/memstore"
-	"github.com/arseniisemenow/ttbot-repo-placeholder-4/pkg/store/ydbstore"
+	"github.com/arseniisemenow/s21-identity-bot/pkg/crypto"
+	"github.com/arseniisemenow/s21-identity-bot/pkg/handlers"
+	"github.com/arseniisemenow/s21-identity-bot/pkg/messenger"
+	"github.com/arseniisemenow/s21-identity-bot/pkg/s21"
+	"github.com/arseniisemenow/s21-identity-bot/pkg/store"
+	"github.com/arseniisemenow/s21-identity-bot/pkg/store/memstore"
+	"github.com/arseniisemenow/s21-identity-bot/pkg/store/ydbstore"
 )
 
 type APIGatewayRequest struct {
